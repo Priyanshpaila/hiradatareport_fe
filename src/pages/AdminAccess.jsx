@@ -236,7 +236,7 @@ function FieldCard({
       style={{ borderRadius: 10 }}
       bodyStyle={{ paddingTop: 12, paddingBottom: 12 }}
       extra={
-        <Space>
+        <Space wrap>
           <Button
             size="small"
             icon={<ArrowUpOutlined />}
@@ -268,7 +268,7 @@ function FieldCard({
         </Space>
       }
     >
-      <Row gutter={8} style={{ marginBottom: 6 }}>
+      <Row gutter={[8, 8]} style={{ marginBottom: 6 }}>
         <Col xs={24} md={10}>
           <Text type="secondary">Label</Text>
           <Input
@@ -320,7 +320,7 @@ function FieldCard({
         </Col>
       </Row>
 
-      <Row gutter={8}>
+      <Row gutter={[8, 8]}>
         <Col xs={24} md={10}>
           <Text type="secondary">Placeholder</Text>
           <Input
@@ -394,8 +394,8 @@ function FieldCard({
 
 /* ------------------------------- Page ---------------------------------- */
 export default function AdminAccess() {
-  const screensBp = useBreakpoint();
-  const isMobile = !screensBp.md;
+  const bp = useBreakpoint();
+  const isMobile = !bp.md;
 
   // ----- users state -----
   const [users, setUsers] = useState([]);
@@ -470,6 +470,8 @@ export default function AdminAccess() {
   const [formTitle, setFormTitle] = useState(DEFAULT_FORM_TITLE);
   const [fields, setFields] = useState([]);
 
+  const hardCap8 = (e) => (e?.target?.value || "").slice(0, 8);
+
   /* =========================================================================
    * USERS
    * ========================================================================= */
@@ -502,7 +504,7 @@ export default function AdminAccess() {
 
   const openCreateUser = () => {
     createUserForm.resetFields();
-    createUserForm.setFieldsValue({ role: "user" }); // default
+    createUserForm.setFieldsValue({ role: "user" });
     setCreateUserOpen(true);
   };
 
@@ -514,17 +516,15 @@ export default function AdminAccess() {
         fullName: values.fullName,
         email: values.email,
         role: values.role,
-        password: values.password, // your BE expects 8 chars (same as reset)
+        password: values.password,
       });
       message.success("User created");
       setCreateUserOpen(false);
-      // refresh table on page 1 to show the new user
       setPage(1);
       fetchUsers({ q: userQuery, page: 1 });
     } catch (e) {
-      if (!e?.errorFields) {
+      if (!e?.errorFields)
         message.error(e?.response?.data?.message || "Failed to create user");
-      }
     } finally {
       setCreatingUser(false);
     }
@@ -541,6 +541,57 @@ export default function AdminAccess() {
     const { data } = await api.get("/meta/screens");
     setScreens(data);
   };
+
+  // --- delete Division & Screen helpers ---
+  const deleteDivision = async (id) => {
+    try {
+      const { data } = await api.delete(`/meta/divisions/${id}`);
+      const r = data?.removed || {};
+      message.success(
+        `Division deleted. Cleaned ${r.formDefinitions || 0} form defs, ${
+          r.submissions || 0
+        } submissions, ${r.accessGrants || 0} grants.`
+      );
+      await loadDivisions();
+
+      // clear selections referencing the deleted division
+      setSelectedDivision((prev) => (prev === id ? null : prev));
+      setSelectedDivisions((prev) =>
+        Array.isArray(prev) ? prev.filter((x) => x !== id) : prev
+      );
+      setSchemaDivisionId((prev) => (prev === id ? null : prev));
+
+      // user grants may have changed if a selected user is shown
+      if (selectedUser) await loadUserGrants(selectedUser);
+    } catch (e) {
+      message.error(e?.response?.data?.message || "Failed to delete division");
+    }
+  };
+
+  const deleteScreen = async (id) => {
+    try {
+      const { data } = await api.delete(`/meta/screens/${id}`);
+      const r = data?.removed || {};
+      message.success(
+        `Screen deleted. Cleaned ${r.formDefinitions || 0} form defs, ${
+          r.submissions || 0
+        } submissions; pulled from ${r.pulledFromGrants || 0} grants.`
+      );
+      await loadScreens();
+
+      // clear selections referencing the deleted screen
+      setSelectedScreens((prev) =>
+        Array.isArray(prev) ? prev.filter((x) => x !== id) : prev
+      );
+      setSchemaScreenId((prev) => (prev === id ? null : prev));
+
+      // user grants may have changed if a selected user is shown
+      if (selectedUser) await loadUserGrants(selectedUser);
+    } catch (e) {
+      message.error(e?.response?.data?.message || "Failed to delete screen");
+    }
+  };
+
   useEffect(() => {
     loadDivisions();
     loadScreens();
@@ -579,7 +630,7 @@ export default function AdminAccess() {
       const promises = [];
       for (const u of targetUsers) {
         for (const d of targetDivisions) {
-          if (op === "set") {
+          if (op === "set")
             promises.push(
               api.post("/access/grant", {
                 userId: u,
@@ -587,7 +638,7 @@ export default function AdminAccess() {
                 screenIds: selectedScreens,
               })
             );
-          } else {
+          else
             promises.push(
               api.patch("/access/grant/screens", {
                 userId: u,
@@ -596,7 +647,6 @@ export default function AdminAccess() {
                 screenIds: selectedScreens,
               })
             );
-          }
         }
       }
       await Promise.all(promises);
@@ -625,6 +675,66 @@ export default function AdminAccess() {
       })),
     [users]
   );
+
+  // Remove division access (delete grant) for all selected user–division pairs
+  const removeDivisionAccess = async () => {
+    try {
+      setGrantLoading(true);
+
+      const targetUsers = bulkMode
+        ? selectedUsers
+        : selectedUser
+        ? [selectedUser]
+        : [];
+      const targetDivisions = bulkMode
+        ? selectedDivisions
+        : selectedDivision
+        ? [selectedDivision]
+        : [];
+
+      if (!targetUsers.length) return message.error("Select user(s)");
+      if (!targetDivisions.length) return message.error("Select division(s)");
+
+      // hit the path-param endpoint you added: DELETE /access/grant/:userId/:divisionId
+      await Promise.all(
+        targetUsers.flatMap((u) =>
+          targetDivisions.map((d) => api.delete(`/access/grant/${u}/${d}`))
+        )
+      );
+
+      message.success(
+        `Removed division access for ${targetUsers.length} user(s) across ${targetDivisions.length} division(s).`
+      );
+
+      if (!bulkMode && selectedUser) await loadUserGrants(selectedUser);
+      if (bulkMode && selectedUsers.length === 1)
+        await loadUserGrants(selectedUsers[0]);
+    } catch (e) {
+      message.error(
+        e?.response?.data?.message || "Failed to remove division access"
+      );
+    } finally {
+      setGrantLoading(false);
+    }
+  };
+
+  // Row-level remove (only when a single user is selected)
+  const removeGrantRow = async (grant) => {
+    try {
+      if (!selectedUser) return;
+      setGrantLoading(true);
+      const divisionId = grant?.division?._id || grant?.division; // populated or raw
+      await api.delete(`/access/grant/${selectedUser}/${divisionId}`);
+      message.success("Division access removed");
+      await loadUserGrants(selectedUser);
+    } catch (e) {
+      message.error(
+        e?.response?.data?.message || "Failed to remove division access"
+      );
+    } finally {
+      setGrantLoading(false);
+    }
+  };
 
   /* =========================================================================
    * USER MANAGEMENT
@@ -678,17 +788,47 @@ export default function AdminAccess() {
     }
   };
 
+  // Left-side (picker) table columns — reduce on small screens
+  const pickerColumns = [
+    { title: "Name", dataIndex: "fullName", ellipsis: true },
+    { title: "Email", dataIndex: "email", ellipsis: true, responsive: ["md"] },
+    {
+      title: "Role",
+      dataIndex: "role",
+      render: (r) => <RoleTag role={r} />,
+      width: 120,
+    },
+  ];
+
+  // Main users table (Users tab)
   const userColumns = [
     {
       title: "User",
       dataIndex: "fullName",
       key: "fullName",
+      onHeaderCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (_, u) => (
         <Space>
           <UserOutlined />
-          <div>
-            <div style={{ fontWeight: 600 }}>{u.fullName}</div>
-            <Text type="secondary" style={{ fontSize: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontWeight: 600,
+                lineHeight: 1.2,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {u.fullName}
+            </div>
+            <Text
+              type="secondary"
+              style={{
+                fontSize: 12,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
               {u.email}
             </Text>
           </div>
@@ -700,6 +840,7 @@ export default function AdminAccess() {
       dataIndex: "role",
       key: "role",
       render: (r) => <RoleTag role={r} />,
+      width: 140,
     },
     {
       title: "Actions",
@@ -707,10 +848,10 @@ export default function AdminAccess() {
       render: (_, u) => (
         <Space size="small" wrap>
           <Button icon={<SafetyOutlined />} onClick={() => openRoleModal(u)}>
-            Change Role
+            {isMobile ? "Role" : "Change Role"}
           </Button>
           <Button icon={<KeyOutlined />} onClick={() => openPwdModal(u)}>
-            Reset Password
+            {isMobile ? "Reset" : "Reset Password"}
           </Button>
           <Popconfirm
             title="Delete user?"
@@ -724,12 +865,15 @@ export default function AdminAccess() {
           </Popconfirm>
         </Space>
       ),
+      responsive: ["sm"],
     },
   ];
 
   /* =========================================================================
    * DIVISION & SCREEN CREATION
    * ========================================================================= */
+  // const [divModalOpen, setDivModalOpen] = useState(false);
+  // const [divForm] = Form.useForm();
   const openCreateDivision = () => {
     divForm.resetFields();
     setDivModalOpen(true);
@@ -746,6 +890,8 @@ export default function AdminAccess() {
         message.error(e.response?.data?.message || "Failed to create division");
     }
   };
+  // const [screenModalOpen, setScreenModalOpen] = useState(false);
+  // const [screenForm] = Form.useForm();
   const openCreateScreen = () => {
     screenForm.resetFields();
     setScreenModalOpen(true);
@@ -795,7 +941,6 @@ export default function AdminAccess() {
         setFormTitle(DEFAULT_FORM_TITLE);
       } else {
         setActiveVersion(data.version || null);
-        // hydrate builder from JSON
         setFields(parseFieldsFromJson(data.schema, data.uiSchema));
         setFormTitle(data.schema?.title || DEFAULT_FORM_TITLE);
         setSchemaText(pretty(data.schema || {}));
@@ -845,7 +990,6 @@ export default function AdminAccess() {
     ];
     const t = TEMPLATES.find((x) => x.label === label);
     if (!t) return;
-    // hydrate builder from template
     setFields(parseFieldsFromJson(t.schema, t.uiSchema));
     setFormTitle(t.schema.title || DEFAULT_FORM_TITLE);
     setSchemaText(pretty(t.schema));
@@ -912,9 +1056,10 @@ export default function AdminAccess() {
 
   /* ----------------------------- Render ----------------------------- */
   return (
-    <div style={{ display: "grid", gap: 16 }}>
+    <div style={{ display: "grid", gap: isMobile ? 12 : 16, minWidth: 0 }}>
       <Card
         style={{ borderRadius: 12 }}
+        bodyStyle={{ padding: isMobile ? 12 : 16 }}
         title={
           <Title level={4} style={{ margin: 0 }}>
             Admin Panel
@@ -930,24 +1075,27 @@ export default function AdminAccess() {
       >
         {mode === "Access" ? (
           <>
-            <Row gutter={[16, 16]}>
+            <Row gutter={[{ xs: 8, sm: 12, md: 16 }, 16]}>
               {/* Left: user picker */}
-              <Col xs={24} md={10}>
+              <Col xs={24} md={10} style={{ minWidth: 0 }}>
                 <Card
                   style={{ borderRadius: 12, height: "100%" }}
+                  bodyStyle={{ padding: isMobile ? 12 : 16, overflowX: "auto" }}
                   title="Select User(s)"
                   extra={
-                    <Input.Search
-                      placeholder="Search users..."
-                      allowClear
-                      onSearch={(v) => onSearchNow(v)}
-                      onChange={(e) => onSearchNow(e.target.value)}
-                      style={{ maxWidth: 260 }}
-                    />
+                    <div style={{ minWidth: 0 }}>
+                      <Input.Search
+                        placeholder="Search users..."
+                        allowClear
+                        onSearch={(v) => onSearchNow(v)}
+                        onChange={(e) => onSearchNow(e.target.value)}
+                        style={{ maxWidth: isMobile ? 240 : 260 }}
+                      />
+                    </div>
                   }
                 >
                   <Space direction="vertical" style={{ width: "100%" }}>
-                    <Space>
+                    <Space wrap>
                       <Switch checked={bulkMode} onChange={setBulkMode} />
                       <Text>Bulk mode</Text>
                     </Space>
@@ -988,6 +1136,8 @@ export default function AdminAccess() {
 
                   <Table
                     size="small"
+                    tableLayout="fixed"
+                    scroll={{ x: "max-content" }}
                     pagination={{
                       current: page,
                       pageSize: 10,
@@ -998,35 +1148,30 @@ export default function AdminAccess() {
                     loading={usersLoading}
                     dataSource={users}
                     rowKey="_id"
-                    columns={[
-                      { title: "Name", dataIndex: "fullName" },
-                      { title: "Email", dataIndex: "email" },
-                      {
-                        title: "Role",
-                        dataIndex: "role",
-                        render: (r) => <RoleTag role={r} />,
-                      },
-                    ]}
+                    columns={pickerColumns}
                   />
                 </Card>
               </Col>
 
               {/* Right: grant wizard */}
-              <Col xs={24} md={14}>
+              <Col xs={24} md={14} style={{ minWidth: 0 }}>
                 <Card
                   style={{ borderRadius: 12, marginBottom: 16 }}
+                  bodyStyle={{ padding: isMobile ? 12 : 16 }}
                   title="Grant Division & Screens"
                   extra={
                     <Space wrap>
                       <Button
                         icon={<AppstoreAddOutlined />}
                         onClick={openCreateDivision}
+                        block={isMobile}
                       >
                         New Division
                       </Button>
                       <Button
                         icon={<PlusOutlined />}
                         onClick={openCreateScreen}
+                        block={isMobile}
                       >
                         New Screen
                       </Button>
@@ -1035,6 +1180,7 @@ export default function AdminAccess() {
                         type="primary"
                         ghost
                         onClick={openSchemaStudio}
+                        block={isMobile}
                       >
                         Schema Studio
                       </Button>
@@ -1046,7 +1192,6 @@ export default function AdminAccess() {
                       <Alert
                         type="info"
                         showIcon
-                        message="Tip"
                         description={
                           bulkMode
                             ? "Select multiple users and divisions. Screens + operation apply to every user–division pair."
@@ -1109,52 +1254,124 @@ export default function AdminAccess() {
                     </Col>
                   </Row>
 
-                  <Button
-                    type="primary"
-                    style={{ marginTop: 12 }}
-                    onClick={applyGrants}
-                    loading={grantLoading}
-                    disabled={
-                      (!bulkMode && (!selectedUser || !selectedDivision)) ||
-                      (bulkMode &&
-                        (selectedUsers.length === 0 ||
-                          selectedDivisions.length === 0))
-                    }
-                    block={isMobile}
-                  >
-                    {op === "set"
-                      ? "Save Access"
-                      : op === "add"
-                      ? "Add Screens"
-                      : "Remove Screens"}
-                  </Button>
+                  <Space wrap style={{ marginTop: 12 }}>
+                    <Button
+                      type="primary"
+                      onClick={applyGrants}
+                      loading={grantLoading}
+                      disabled={
+                        (!bulkMode && (!selectedUser || !selectedDivision)) ||
+                        (bulkMode &&
+                          (selectedUsers.length === 0 ||
+                            selectedDivisions.length === 0))
+                      }
+                      block={isMobile}
+                    >
+                      {op === "set"
+                        ? "Save Access"
+                        : op === "add"
+                        ? "Add Screens"
+                        : "Remove Screens"}
+                    </Button>
+
+                    <Popconfirm
+                      title="Remove division access?"
+                      description="This deletes the entire access for the selected division(s) (all screens)."
+                      okType="danger"
+                      onConfirm={removeDivisionAccess}
+                    >
+                      <Button
+                        danger
+                        loading={grantLoading}
+                        disabled={
+                          (!bulkMode && (!selectedUser || !selectedDivision)) ||
+                          (bulkMode &&
+                            (selectedUsers.length === 0 ||
+                              selectedDivisions.length === 0))
+                        }
+                        block={isMobile}
+                      >
+                        Remove Division Access
+                      </Button>
+                    </Popconfirm>
+                  </Space>
                 </Card>
 
                 <Row gutter={[16, 16]}>
-                  <Col xs={24} lg={12}>
-                    <Card style={{ borderRadius: 12 }} title="Divisions">
+                  <Col xs={24} lg={12} style={{ minWidth: 0 }}>
+                    <Card
+                      style={{ borderRadius: 12 }}
+                      bodyStyle={{ overflowX: "auto" }}
+                      title="Divisions"
+                    >
                       <Table
                         size="small"
+                        tableLayout="fixed"
+                        scroll={{ x: "max-content" }}
                         rowKey="_id"
                         dataSource={divisions}
                         pagination={{ pageSize: 5 }}
                         columns={[
-                          { title: "Name", dataIndex: "name" },
-                          { title: "Code", dataIndex: "code" },
+                          { title: "Name", dataIndex: "name", ellipsis: true },
+                          { title: "Code", dataIndex: "code", width: 120 },
+                          {
+                            title: "Action",
+                            key: "act",
+                            width: 120,
+                            render: (_, rec) => (
+                              <Popconfirm
+                                title="Delete division?"
+                                description="This removes the division, its form definitions, submissions, and grants."
+                                okType="danger"
+                                onConfirm={() => deleteDivision(rec._id)}
+                              >
+                                <Button size="small" danger>
+                                  Delete
+                                </Button>
+                              </Popconfirm>
+                            ),
+                          },
                         ]}
                       />
                     </Card>
                   </Col>
-                  <Col xs={24} lg={12}>
-                    <Card style={{ borderRadius: 12 }} title="Screens">
+                  <Col xs={24} lg={12} style={{ minWidth: 0 }}>
+                    <Card
+                      style={{ borderRadius: 12 }}
+                      bodyStyle={{ overflowX: "auto" }}
+                      title="Screens"
+                    >
                       <Table
                         size="small"
+                        tableLayout="fixed"
+                        scroll={{ x: "max-content" }}
                         rowKey="_id"
                         dataSource={screens}
                         pagination={{ pageSize: 5 }}
                         columns={[
-                          { title: "Title", dataIndex: "title" },
-                          { title: "Key", dataIndex: "key" },
+                          {
+                            title: "Title",
+                            dataIndex: "title",
+                            ellipsis: true,
+                          },
+                          { title: "Key", dataIndex: "key", width: 140 },
+                          {
+                            title: "Action",
+                            key: "act",
+                            width: 120,
+                            render: (_, rec) => (
+                              <Popconfirm
+                                title="Delete screen?"
+                                description="This removes the screen, its form definitions, submissions, and pulls it from all grants."
+                                okType="danger"
+                                onConfirm={() => deleteScreen(rec._id)}
+                              >
+                                <Button size="small" danger>
+                                  Delete
+                                </Button>
+                              </Popconfirm>
+                            ),
+                          },
                         ]}
                       />
                     </Card>
@@ -1163,21 +1380,55 @@ export default function AdminAccess() {
 
                 <Card
                   style={{ borderRadius: 12, marginTop: 16 }}
+                  bodyStyle={{ overflowX: "auto" }}
                   title="Current Grants"
                 >
                   <Table
                     size="small"
+                    tableLayout="fixed"
+                    scroll={{ x: "max-content" }}
                     dataSource={grants}
                     rowKey="_id"
                     columns={[
-                      { title: "Division", dataIndex: ["division", "name"] },
-                      { title: "Code", dataIndex: ["division", "code"] },
+                      {
+                        title: "Division",
+                        dataIndex: ["division", "name"],
+                        ellipsis: true,
+                      },
+                      {
+                        title: "Code",
+                        dataIndex: ["division", "code"],
+                        width: 120,
+                      },
                       {
                         title: "Screens",
                         dataIndex: "screens",
                         render: (arr = []) =>
                           arr.map((s) => s.title).join(", "),
+                        ellipsis: true,
                       },
+                      // Row action appears only when not in bulk mode and one user is selected
+                      ...(!bulkMode && selectedUser
+                        ? [
+                            {
+                              title: "Action",
+                              key: "act",
+                              width: 160,
+                              render: (_, g) => (
+                                <Popconfirm
+                                  title="Remove this division access?"
+                                  description="Deletes this division grant (all screens) for the user."
+                                  okType="danger"
+                                  onConfirm={() => removeGrantRow(g)}
+                                >
+                                  <Button size="small" danger>
+                                    Remove Access
+                                  </Button>
+                                </Popconfirm>
+                              ),
+                            },
+                          ]
+                        : []),
                     ]}
                   />
                   {bulkMode ? (
@@ -1201,6 +1452,7 @@ export default function AdminAccess() {
                   width: "100%",
                   justifyContent: "space-between",
                   flexWrap: "wrap",
+                  gap: 8,
                 }}
               >
                 <Input.Search
@@ -1209,31 +1461,39 @@ export default function AdminAccess() {
                   enterButton
                   onSearch={(v) => onSearchNow(v)}
                   onChange={(e) => onSearchNow(e.target.value)}
-                  style={{ minWidth: 260 }}
+                  style={{ minWidth: 240, maxWidth: 380, flex: 1 }}
                 />
                 <Button
                   type="primary"
                   icon={<PlusOutlined />}
                   onClick={openCreateUser}
+                  block={isMobile}
                 >
                   New User
                 </Button>
               </Space>
 
-              <Table
-                bordered
-                rowKey="_id"
-                loading={usersLoading}
-                dataSource={users}
-                columns={userColumns}
-                pagination={{
-                  current: page,
-                  pageSize: 10,
-                  total,
-                  onChange: setPage,
-                  showSizeChanger: false,
-                }}
-              />
+              <Card
+                bodyStyle={{ padding: isMobile ? 8 : 12, overflowX: "auto" }}
+                style={{ borderRadius: 12 }}
+              >
+                <Table
+                  bordered
+                  tableLayout="fixed"
+                  scroll={{ x: "max-content" }}
+                  rowKey="_id"
+                  loading={usersLoading}
+                  dataSource={users}
+                  columns={userColumns}
+                  pagination={{
+                    current: page,
+                    pageSize: 10,
+                    total,
+                    onChange: setPage,
+                    showSizeChanger: false,
+                  }}
+                />
+              </Card>
             </Space>
           </>
         )}
@@ -1314,8 +1574,13 @@ export default function AdminAccess() {
               { len: 8, message: "Password must be exactly 8 characters" },
             ]}
             extra="Share this temporary password with the user; they can change it later."
+            getValueFromEvent={(e) => (e?.target?.value || "").slice(0, 8)}
           >
-            <Input.Password placeholder="8 characters" maxLength={8} />
+            <Input.Password
+              placeholder="8 characters"
+              maxLength={8}
+              autoComplete="new-password"
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -1336,6 +1601,7 @@ export default function AdminAccess() {
               { required: true, message: "Password is required" },
               { len: 8, message: "Password must be exactly 8 characters" },
             ]}
+            getValueFromEvent={(e) => (e?.target?.value || "").slice(0, 8)}
           >
             <Input.Password placeholder="8 characters" maxLength={8} />
           </Form.Item>
@@ -1390,11 +1656,11 @@ export default function AdminAccess() {
 
       {/* ---------------- Schema Studio Drawer (Builder + Advanced) ---------------- */}
       <Drawer
-        title={
-          <Space>
-            <CodeOutlined /> <span>Schema Studio</span>
-          </Space>
-        }
+        // title={
+        //   <Space>
+        //     <CodeOutlined /> <span>Schema Studio</span>
+        //   </Space>
+        // }
         placement="right"
         width={isMobile ? "100%" : 980}
         open={schemaOpen}
@@ -1535,8 +1801,7 @@ export default function AdminAccess() {
                   <Alert
                     type="info"
                     showIcon
-                    message="No fields yet"
-                    description="Use the Quick Add buttons above to insert fields, then customize them here."
+                    description="No fields yet.  Use the Quick Add buttons above to insert fields, then customize them here."
                   />
                 )}
                 {fields.map((f, idx) => (

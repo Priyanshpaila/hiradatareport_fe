@@ -2,8 +2,8 @@ import { ConfigProvider, theme as antdTheme } from "antd";
 import "../styles/global.css";
 
 const brand = {
-  colorPrimary: "#0A66C2",
-  colorInfo: "#0A66C2",
+  colorPrimary: "#24AAE2",
+  colorInfo: "#24AAE2",
   borderRadius: 10
 };
 

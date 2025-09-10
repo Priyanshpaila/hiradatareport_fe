@@ -98,7 +98,7 @@ export default function RecentSubmissions({ submissions = [], schema }) {
               <Space wrap size="small">
                 <Tag color="blue">Version: v{detail?.formVersion}</Tag>
                 <Tag>Submitted: {dayjs(detail?.createdAt).format("DD MMM YYYY, HH:mm")}</Tag>
-                {detail?.submittedBy && <Tag color="geekblue">By: {String(detail.submittedBy).slice(0, 8)}</Tag>}
+                {detail?.submittedBy.fullName && <Tag color="geekblue">By: {String(detail.submittedBy.fullName)}</Tag>}
               </Space>
             </div>
           </>

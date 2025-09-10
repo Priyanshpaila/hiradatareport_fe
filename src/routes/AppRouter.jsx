@@ -1,3 +1,4 @@
+// src/routes/AppRouter.jsx
 import { useMemo, useState } from "react";
 import {
   BrowserRouter,
@@ -37,9 +38,10 @@ import Dashboard from "../pages/Dashboard";
 import DivisionScreen from "../pages/DivisionScreen";
 import Charts from "../pages/Charts";
 import AdminAccess from "../pages/AdminAccess";
+import Profile from "../pages/Profile";
 
-// 👉 make sure this file exists (or update the path)
-import logo from "../assets/logo.png";
+// 👉 ensure this exists at src/assets/logo1.png
+import logo from "../assets/logo1.png";
 
 const { Header, Sider, Content, Footer } = Layout;
 const { useBreakpoint } = Grid;
@@ -62,7 +64,9 @@ function useBreadcrumbs() {
         ? "Division"
         : snip === "screen"
         ? "Screen"
-        : snip;
+        : snip === "profile"
+        ? "My Profile"
+        : decodeURIComponent(snip);
     return { title: <Link to={url}>{label}</Link> };
   });
 
@@ -79,36 +83,39 @@ function useBreadcrumbs() {
 }
 
 function AppLogo({ collapsed = false, variant = "sider" }) {
-  // Taller for the sider, compact for the header
-  const height = variant === "header" ? (collapsed ? 28 : 32) : (collapsed ? 56 : 72);
-  const padding = variant === "header" ? 0 : 8;
+  const isHeader = variant === "header";
+
+  // Compact in header, roomier in sider
+  const boxHeight = isHeader ? 32 : collapsed ? 50 : 75;
+  const boxWidth = isHeader ? 150 : "100%";
 
   return (
     <Link to="/" style={{ display: "block" }}>
       <div
         style={{
-          width: "100%",
-          height,
-          padding,
-          display: "grid",
-          placeItems: "center",
+          width: boxWidth,
+          height: boxHeight,
+          margin: isHeader ? "6px auto" : "8px auto",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
         }}
       >
         <img
           src={logo}
-          alt="Data Portal"
+          alt="HIRA Analytics"
           style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain", // keep aspect ratio, fill width/height box
             display: "block",
+            height: "100%",
+            width: "auto",
+            maxWidth: "100%",
+            objectFit: "contain",
           }}
         />
       </div>
     </Link>
   );
 }
-
 
 /* ----------------------------- Shell ------------------------------------ */
 function Shell() {
@@ -125,6 +132,7 @@ function Shell() {
   const [collapsed, setCollapsed] = useState(false);
 
   const selectedKey = useMemo(() => {
+    if (location.pathname.startsWith("/profile")) return "profile";
     if (location.pathname.startsWith("/admin")) return "admin";
     if (location.pathname.startsWith("/charts")) return "charts";
     return "dash";
@@ -142,6 +150,12 @@ function Shell() {
         icon: <BarChartOutlined />,
         label: <NavLink to="/charts">Charts</NavLink>,
       },
+      // Optional: expose Profile in the sider (you can remove this if you want it only in the avatar menu)
+      {
+        key: "profile",
+        icon: <UserOutlined />,
+        label: <NavLink to="/profile">Profile</NavLink>,
+      },
     ];
     if (user?.role === "superadmin") {
       base.push({
@@ -153,27 +167,22 @@ function Shell() {
     return base;
   }, [user?.role]);
 
+  // Use Dropdown's root onClick to handle navigation reliably
   const userMenu = {
     items: [
-      {
-        key: "profile",
-        icon: <UserOutlined />,
-        label: "Profile (coming soon)",
-      },
+      { key: "profile", icon: <UserOutlined />, label: "Profile" },
       { type: "divider" },
-      {
-        key: "logout",
-        icon: <LogoutOutlined />,
-        label: "Logout",
-        onClick: logout,
-      },
+      { key: "logout", icon: <LogoutOutlined />, label: "Logout" },
     ],
+    onClick: ({ key }) => {
+      if (key === "profile") navigate("/profile");
+      if (key === "logout") logout();
+    },
   };
 
   return (
-    // Lock the whole shell to viewport height; page itself won't scroll
     <Layout style={{ height: "100vh", background: token.colorBgLayout }}>
-      {/* Fixed Sider (no scroll) */}
+      {/* Fixed Sider */}
       {!isMobile && (
         <Sider
           width={240}
@@ -191,9 +200,9 @@ function Shell() {
             boxShadow: "0 2px 12px rgba(0,0,0,0.04)",
           }}
         >
-      <div style={{ padding: 0 }}>
-  <AppLogo collapsed={collapsed} />
-</div>
+          <div style={{ padding: 0 }}>
+            <AppLogo collapsed={collapsed} />
+          </div>
           <Menu
             selectedKeys={[selectedKey]}
             mode="inline"
@@ -207,9 +216,9 @@ function Shell() {
         </Sider>
       )}
 
-      {/* Right side column fills height; only Content scrolls */}
+      {/* Right column */}
       <Layout style={{ height: "100vh" }}>
-        {/* Header (fixed at top of the right side) */}
+        {/* Header */}
         <Header
           style={{
             flex: "0 0 auto",
@@ -233,9 +242,9 @@ function Shell() {
                 onClick={() => setDrawerOpen(true)}
                 style={{ marginRight: 4 }}
               />
-             <div style={{ flex: 1 }}>
-  <AppLogo variant="header" collapsed={false} />
-</div>
+              <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
+                <AppLogo variant="header" />
+              </div>
             </>
           ) : (
             <Breadcrumb items={breadcrumbItems} style={{ flex: 1 }} />
@@ -258,7 +267,7 @@ function Shell() {
           </Dropdown>
         </Header>
 
-        {/* ⭐ Content is the ONLY scrollable area */}
+        {/* Content */}
         <Content
           style={{
             flex: "1 1 auto",
@@ -277,10 +286,18 @@ function Shell() {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/charts" element={<Charts />} />
+
+              {/* Friendly route */}
+              <Route
+                path="/division/:divisionCode/screen/:screenKey"
+                element={<DivisionScreen />}
+              />
+              {/* Legacy id route still supported */}
               <Route
                 path="/division/:divisionId/screen/:screenId"
                 element={<DivisionScreen />}
               />
+
               <Route
                 path="/admin"
                 element={
@@ -297,19 +314,29 @@ function Shell() {
                   </ProtectedRoute>
                 }
               />
+              <Route
+                path="/profile"
+                element={
+                  <ProtectedRoute>
+                    <Profile />
+                  </ProtectedRoute>
+                }
+              />
             </Routes>
           </div>
         </Content>
 
-        {/* Footer stays pinned under the scrolling Content */}
-        <Footer style={{ flex: "0 0 auto", textAlign: "center", color: "#9aa4b2" }}>
-          © {new Date().getFullYear()} Data Portal • RR ISPAT — A Unit of GPIL
+        {/* Footer */}
+        <Footer
+          style={{ flex: "0 0 auto", textAlign: "center", color: "#9aa4b2" }}
+        >
+          © {new Date().getFullYear()} Report • RR ISPAT — A Unit of GPIL
         </Footer>
       </Layout>
 
       {/* Mobile Drawer Nav */}
       <Drawer
-        title={<AppLogo collapsed={false} />}
+        title={<AppLogo variant="header" collapsed={false} />}
         open={isMobile && drawerOpen}
         onClose={() => setDrawerOpen(false)}
         placement="left"
@@ -324,6 +351,7 @@ function Shell() {
             if (key === "dash") navigate("/");
             if (key === "charts") navigate("/charts");
             if (key === "admin") navigate("/admin");
+            if (key === "profile") navigate("/profile");
           }}
         />
       </Drawer>
