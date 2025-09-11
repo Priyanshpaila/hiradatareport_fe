@@ -12,8 +12,9 @@ import {
   Button,
   Tooltip as AntdTooltip,
   message,
-  Divider,
   Alert,
+  Table,
+  Tag,
 } from "antd";
 import {
   DownloadOutlined,
@@ -25,7 +26,7 @@ import {
 import { api } from "../api";
 import dayjs from "dayjs";
 import ExportA3Button from "../components/ExportA3Button";
-import logo from "../assets/logo.png";
+import logo from "../assets/logo1.png";
 
 import {
   ResponsiveContainer,
@@ -41,46 +42,13 @@ import {
   Tooltip,
   Legend,
   ReferenceLine,
+  ScatterChart,
+  Scatter,
 } from "recharts";
 
 const { Text, Title } = Typography;
 
-/* ------------------------------ helpers ------------------------------- */
-function toCSV(rows) {
-  if (!rows?.length) return "";
-  const headers = Object.keys(rows[0]);
-  const body = rows.map((r) =>
-    headers.map((h) => JSON.stringify(r[h] ?? "")).join(",")
-  );
-  return [headers.join(","), ...body].join("\n");
-}
-
-function downloadCSV(rows, filename = "chart-data.csv") {
-  const csv = toCSV(rows);
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function computeKPIsFromCombined(rows) {
-  if (!rows?.length) return { last: 0, prev: 0, mom: 0, sum: 0 };
-  const last = rows[rows.length - 1]?.total ?? 0;
-  const prev = rows[rows.length - 2]?.total ?? 0;
-  const mom = prev ? ((last - prev) / prev) * 100 : 0;
-  const sum = rows.reduce((a, b) => a + (b.total ?? 0), 0);
-  return {
-    last: Number(last.toFixed(2)),
-    prev: Number(prev.toFixed(2)),
-    mom: Number(mom.toFixed(1)),
-    sum: Number(sum.toFixed(2)),
-  };
-}
-
-// simple palette for series; falls back to Recharts defaults if you omit
+/* -------------------------------- helpers -------------------------------- */
 const PALETTE = [
   "#5B8FF9",
   "#61DDAA",
@@ -94,29 +62,162 @@ const PALETTE = [
   "#3CCBDA",
 ];
 
-/* ------------------------------- page --------------------------------- */
+const toCSV = (rows) => {
+  if (!rows?.length) return "";
+  const headers = Object.keys(rows[0]);
+  const body = rows.map((r) =>
+    headers.map((h) => JSON.stringify(r[h] ?? "")).join(",")
+  );
+  return [headers.join(","), ...body].join("\n");
+};
+
+const downloadCSV = (rows, filename) => {
+  const csv = toCSV(rows);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+const monthStartISO = (months) =>
+  dayjs()
+    .startOf("month")
+    .subtract(months - 1, "month")
+    .toISOString();
+
+function buildColumns(schemaProps) {
+  const cols = [];
+  const entries = Object.entries(schemaProps || {});
+  for (const [key, def] of entries) {
+    cols.push({
+      dataIndex: key,
+      key,
+      title: def?.title || key,
+      ellipsis: true,
+      render: (v) => {
+        if (v === null || v === undefined || v === "")
+          return <Text type="secondary">—</Text>;
+        if (typeof v === "boolean")
+          return <Tag color={v ? "green" : ""}>{v ? "Yes" : "No"}</Tag>;
+        if (Array.isArray(v))
+          return v.length ? v.join(", ") : <Text type="secondary">[]</Text>;
+        if (typeof v === "object")
+          return (
+            <Text code ellipsis>
+              {JSON.stringify(v)}
+            </Text>
+          );
+        return String(v);
+      },
+    });
+  }
+  cols.push(
+    {
+      dataIndex: "__submittedByName",
+      title: "Submitted By",
+      key: "__submittedByName",
+      width: 180,
+      ellipsis: true,
+    },
+    {
+      dataIndex: "__createdAtLabel",
+      title: "Submitted At",
+      key: "__createdAtLabel",
+      width: 180,
+    },
+    { dataIndex: "__version", title: "Version", key: "__version", width: 90 }
+  );
+  return cols;
+}
+
+function toFlatRow(item) {
+  return {
+    ...(item.data || {}),
+    __submittedByName: item.submittedByName || "",
+    __createdAtLabel: dayjs(item.createdAt).format("DD MMM YYYY, HH:mm"),
+    __version: item.formVersion,
+    __id: item._id,
+  };
+}
+
+/* Build combined scatter series per field: {key,label,points:[{x,y}]} */
+function buildPerSubmissionSeries(rowsFlat, numericFields, useCustomDate) {
+  const series = numericFields.map((f) => ({
+    key: f.value,
+    label: f.label,
+    points: [],
+  }));
+  const idx = Object.fromEntries(series.map((s) => [s.key, s]));
+  for (const r of rowsFlat) {
+    const xISO = useCustomDate && r.__dateISO ? r.__dateISO : r.__createdAtISO;
+    const x = xISO && dayjs(xISO).isValid() ? dayjs(xISO).valueOf() : null;
+    if (!x) continue;
+    for (const f of numericFields) {
+      const y = Number(r[f.value]);
+      if (Number.isFinite(y)) idx[f.value].points.push({ x, y });
+    }
+  }
+  series.forEach((s) => s.points.sort((a, b) => a.x - b.x));
+  return series;
+}
+
+/* Build monthly SUM & AVG across all numeric fields (one series object per month) */
+function buildMonthlyAggregates(rowsFlat, numericFields, useCustomDate) {
+  const m = new Map(); // "YYYY-MM" -> { month, monthLabel, sums:{}, counts:{} }
+  for (const r of rowsFlat) {
+    const xISO = useCustomDate && r.__dateISO ? r.__dateISO : r.__createdAtISO;
+    const mKey =
+      xISO && dayjs(xISO).isValid() ? dayjs(xISO).format("YYYY-MM") : null;
+    if (!mKey) continue;
+    if (!m.has(mKey)) {
+      m.set(mKey, {
+        month: mKey,
+        monthLabel: dayjs(mKey + "-01").format("MMM YYYY"),
+        sums: Object.fromEntries(numericFields.map((f) => [f.value, 0])),
+        counts: Object.fromEntries(numericFields.map((f) => [f.value, 0])),
+      });
+    }
+    const bucket = m.get(mKey);
+    for (const f of numericFields) {
+      const v = Number(r[f.value]);
+      if (Number.isFinite(v)) {
+        bucket.sums[f.value] += v;
+        bucket.counts[f.value] += 1;
+      }
+    }
+  }
+  const sorted = Array.from(m.values()).sort((a, b) =>
+    a.month.localeCompare(b.month)
+  );
+  const sumSeries = sorted.map((b) => {
+    const row = { month: b.month, monthLabel: b.monthLabel };
+    for (const f of numericFields)
+      row[f.value] = Number(b.sums[f.value].toFixed(2));
+    return row;
+  });
+  const avgSeries = sorted.map((b) => {
+    const row = { month: b.month, monthLabel: b.monthLabel };
+    for (const f of numericFields) {
+      const c = b.counts[f.value] || 0;
+      row[f.value] = c ? Number((b.sums[f.value] / c).toFixed(2)) : 0;
+    }
+    return row;
+  });
+  return { sumSeries, avgSeries };
+}
+
+/* -------------------------------- component ------------------------------- */
 export default function Charts() {
+  // Access/selection
   const [grants, setGrants] = useState([]);
-  const [sel, setSel] = useState(null); // { divisionId, screenId }
-  const [selNames, setSelNames] = useState({ division: "", screen: "" });
-  const [loading, setLoading] = useState(false);
-
-  // numeric fields from schema
-  const [numFields, setNumFields] = useState([]); // [{label, value}]
-  // multi-series rows: [{month, monthLabel, <field1>, <field2>, ..., total}]
-  const [rows, setRows] = useState([]);
-
-  // controls
-  const [months, setMonths] = useState(12);
-  const [chartType, setChartType] = useState("line"); // line | area | bar
-
-  // access -> options for division/screen
   useEffect(() => {
     api
       .get("/access/my-access")
       .then(({ data }) => setGrants(Array.isArray(data) ? data : []));
   }, []);
-
   const options = useMemo(() => {
     return grants.flatMap((g) =>
       (g.screens || []).map((s) => ({
@@ -128,110 +229,166 @@ export default function Charts() {
     );
   }, [grants]);
 
-  // 1) fetch numeric fields from schema
-  const fetchNumericFields = async (divisionId, screenId) => {
+  const [sel, setSel] = useState(null); // { divisionId, screenId }
+  const [selNames, setSelNames] = useState({ division: "", screen: "" });
+
+  // Schema catalogs
+  const [schemaProps, setSchemaProps] = useState({});
+  const [numericFields, setNumericFields] = useState([]); // [{label,value}]
+  const [dateFields, setDateFields] = useState([]); // [{label,value}]
+  const [dateChoice, setDateChoice] = useState("createdAt"); // 'createdAt' | schema date key
+
+  // Data
+  const [loading, setLoading] = useState(false);
+  const [months, setMonths] = useState(12);
+  const [rowsFlat, setRowsFlat] = useState([]);
+
+  // Charts
+  const [chartType, setChartType] = useState("line"); // 'line' | 'area' | 'bar'
+
+  // derived
+  const perSubmissionSeries = useMemo(
+    () =>
+      buildPerSubmissionSeries(
+        rowsFlat,
+        numericFields,
+        dateChoice !== "createdAt"
+      ),
+    [rowsFlat, numericFields, dateChoice]
+  );
+  const { sumSeries, avgSeries } = useMemo(
+    () =>
+      buildMonthlyAggregates(
+        rowsFlat,
+        numericFields,
+        dateChoice !== "createdAt"
+      ),
+    [rowsFlat, numericFields, dateChoice]
+  );
+
+  // KPIs — from SUM series (all fields total)
+  const kpis = useMemo(() => {
+    if (!sumSeries.length || !numericFields.length)
+      return { last: 0, mom: 0, lastLabel: "—", total: 0 };
+    const totalPerRow = sumSeries.map((r) =>
+      numericFields.reduce((acc, f) => acc + (Number(r[f.value]) || 0), 0)
+    );
+    const last = totalPerRow.at(-1) || 0;
+    const prev = totalPerRow.at(-2) || 0;
+    const mom = prev ? ((last - prev) / prev) * 100 : 0;
+    const total = totalPerRow.reduce((a, b) => a + b, 0);
+    return {
+      last: Number(last.toFixed(2)),
+      mom: Number(mom.toFixed(1)),
+      lastLabel: sumSeries.at(-1)?.monthLabel || "—",
+      total: Number(total.toFixed(2)),
+    };
+  }, [sumSeries, numericFields]);
+
+  // table columns
+  const tableColumns = useMemo(() => buildColumns(schemaProps), [schemaProps]);
+
+  /* -------------------------------- data load -------------------------------- */
+  const loadSchema = async (divisionId, screenId) => {
+    setSchemaProps({});
+    setNumericFields([]);
+    setDateFields([]);
     try {
       const { data } = await api.get(`/forms/${divisionId}/${screenId}/schema`);
       const props = data?.schema?.properties || {};
+      setSchemaProps(props);
       const nums = Object.entries(props)
-        .filter(([, sch]) => sch?.type === "number" || sch?.type === "integer")
-        .map(([name, sch]) => ({ label: sch?.title || name, value: name }));
-      setNumFields(nums);
-      return nums;
+        .filter(([, def]) => def?.type === "number" || def?.type === "integer")
+        .map(([name, def]) => ({ value: name, label: def?.title || name }));
+      setNumericFields(nums);
+      const dates = Object.entries(props)
+        .filter(
+          ([, def]) => def?.format === "date" || def?.format === "date-time"
+        )
+        .map(([name, def]) => ({ value: name, label: def?.title || name }));
+      setDateFields([{ value: "createdAt", label: "Created At" }, ...dates]);
+      setDateChoice("createdAt");
     } catch (e) {
-      setNumFields([]);
-      return [];
+      message.error(e?.response?.data?.message || "Failed to load schema");
     }
   };
 
-  // 2) fetch analytics for *each* numeric field, then merge by month
-  const fetchAllSeries = async (divisionId, screenId, monthsArg, fieldsList) => {
-    if (!fieldsList.length) {
-      setRows([]);
-      return;
-    }
+  const loadAllRows = async (
+    divisionId,
+    screenId,
+    dateField,
+    monthsLookback
+  ) => {
     setLoading(true);
     try {
-      // call /sum-by-month for each field concurrently
-      const promises = fieldsList.map((f) =>
-        api.get(`/analytics/${divisionId}/${screenId}/sum-by-month`, {
-          params: { field: f.value, months: monthsArg },
-        })
-      );
-      const results = await Promise.all(promises);
-
-      // build a month index (YYYY-MM sorted)
-      const monthSet = new Set();
-      results.forEach(({ data }) => {
-        (data || []).forEach((r) => monthSet.add(r.month));
-      });
-      const monthKeys = Array.from(monthSet).sort(); // ascending
-
-      // assemble rows
-      const merged = monthKeys.map((m) => {
-        const monthLabel = dayjs(m + "-01").format("MMM YYYY");
-        const row = { month: m, monthLabel };
-        let total = 0;
-        // fill each field
-        results.forEach((res, idx) => {
-          const fieldKey = fieldsList[idx].value;
-          const val =
-            (res.data || []).find((r) => r.month === m)?.total ?? 0;
-          row[fieldKey] = Number(val) || 0;
-          total += Number(val) || 0;
-        });
-        row.total = Number(total.toFixed(2));
+      const params = { page: 1, limit: 1000 };
+      if (dateField && dateField !== "createdAt") params.dateField = dateField;
+      if (monthsLookback !== "all")
+        params.since = monthStartISO(monthsLookback);
+      let all = [];
+      let total = 0;
+      let page = 1;
+      for (;;) {
+        const { data } = await api.get(
+          `/analytics/${divisionId}/${screenId}/rows`,
+          { params: { ...params, page } }
+        );
+        total = data?.total || 0;
+        const items = Array.isArray(data?.items) ? data.items : [];
+        all = all.concat(items);
+        if (all.length >= total || items.length === 0 || page >= 50) break;
+        page += 1;
+      }
+      const flat = all.map((it) => {
+        const row = toFlatRow(it);
+        row.__createdAtISO = it.createdAt;
+        if (dateField && dateField !== "createdAt") {
+          const dv = it?.data ? it.data[dateField] : null;
+          row.__dateISO = dv ? dayjs(dv).toISOString() : null;
+        }
         return row;
       });
-
-      setRows(merged);
+      setRowsFlat(flat);
     } catch (e) {
       console.error(e);
-      message.error(e.response?.data?.message || "Failed to load analytics");
-      setRows([]);
+      message.error(e?.response?.data?.message || "Failed to load rows");
+      setRowsFlat([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // when a selection is made, load schema fields then data
   useEffect(() => {
     (async () => {
       if (!sel) return;
-      const fields = await fetchNumericFields(sel.divisionId, sel.screenId);
-      await fetchAllSeries(sel.divisionId, sel.screenId, months, fields);
+      await loadSchema(sel.divisionId, sel.screenId);
+      await loadAllRows(sel.divisionId, sel.screenId, "createdAt", months);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel]);
 
-  // refetch when months changes (and we already know fields)
   useEffect(() => {
-    if (!sel || !numFields.length) return;
-    fetchAllSeries(sel.divisionId, sel.screenId, months, numFields);
+    if (!sel) return;
+    loadAllRows(sel.divisionId, sel.screenId, dateChoice, months);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [months]);
+  }, [months, dateChoice]);
 
-  const kpis = useMemo(() => computeKPIsFromCombined(rows), [rows]);
+  const reload = () =>
+    sel && loadAllRows(sel.divisionId, sel.screenId, dateChoice, months);
 
-  /* ---------------------------- chart ---------------------------- */
-  const ChartBody = () => {
-    if (loading) return <div style={{ padding: 24, textAlign: "center" }}><Spin /></div>;
-    if (!rows.length) {
+  /* ------------------------------ chart bits ------------------------------ */
+  const AggregatedMultiChart = ({ data, title }) => {
+    if (loading) {
       return (
         <div style={{ padding: 24, textAlign: "center" }}>
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No data" />
+          <Spin />
         </div>
       );
     }
-    if (!numFields.length) {
+    if (!data.length || !numericFields.length) {
       return (
-        <div style={{ padding: 24 }}>
-          <Alert
-            type="info"
-            showIcon
-            message="No numeric fields found"
-            description="This form has no numeric fields to visualize."
-          />
+        <div style={{ padding: 24, textAlign: "center" }}>
+          <Empty description="No data to display" />
         </div>
       );
     }
@@ -247,43 +404,44 @@ export default function Charts() {
       </>
     );
 
+    // --- NEW: compute the chart once, with a safe fallback ---
+    let renderedChart = null;
+
     if (chartType === "bar") {
-      return (
-        <ResponsiveContainer width="100%" height={380}>
-          <BarChart data={rows}>
-            {common}
-            {numFields.map((f, i) => (
-              <Bar key={f.value} dataKey={f.value} name={f.label} fill={PALETTE[i % PALETTE.length]} />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      );
-    }
-    if (chartType === "area") {
-      return (
-        <ResponsiveContainer width="100%" height={380}>
-          <AreaChart data={rows}>
-            {common}
-            {numFields.map((f, i) => (
-              <Area
-                key={f.value}
-                type="monotone"
-                dataKey={f.value}
-                name={f.label}
-                fill={PALETTE[i % PALETTE.length]}
-                stroke={PALETTE[i % PALETTE.length]}
-              />
-            ))}
-          </AreaChart>
-        </ResponsiveContainer>
-      );
-    }
-    // default line
-    return (
-      <ResponsiveContainer width="100%" height={380}>
-        <LineChart data={rows}>
+      renderedChart = (
+        <BarChart data={data}>
           {common}
-          {numFields.map((f, i) => (
+          {numericFields.map((f, i) => (
+            <Bar
+              key={f.value}
+              dataKey={f.value}
+              name={f.label}
+              fill={PALETTE[i % PALETTE.length]}
+            />
+          ))}
+        </BarChart>
+      );
+    } else if (chartType === "area") {
+      renderedChart = (
+        <AreaChart data={data}>
+          {common}
+          {numericFields.map((f, i) => (
+            <Area
+              key={f.value}
+              type="monotone"
+              dataKey={f.value}
+              name={f.label}
+              stroke={PALETTE[i % PALETTE.length]}
+              fill={PALETTE[i % PALETTE.length]}
+            />
+          ))}
+        </AreaChart>
+      );
+    } else if (chartType === "line") {
+      renderedChart = (
+        <LineChart data={data}>
+          {common}
+          {numericFields.map((f, i) => (
             <Line
               key={f.value}
               type="monotone"
@@ -295,182 +453,381 @@ export default function Charts() {
             />
           ))}
         </LineChart>
-      </ResponsiveContainer>
+      );
+    }
+
+    // Fallback if chartType is invalid
+    if (!renderedChart) {
+      renderedChart = (
+        <LineChart data={data}>
+          {common}
+          {numericFields.map((f, i) => (
+            <Line
+              key={f.value}
+              type="monotone"
+              dataKey={f.value}
+              name={f.label}
+              stroke={PALETTE[i % PALETTE.length]}
+              dot={false}
+              strokeWidth={2}
+            />
+          ))}
+        </LineChart>
+      );
+    }
+
+    return (
+      <Card
+        style={{ borderRadius: 12 }}
+        title={title}
+        extra={
+          <Text type="secondary">
+            {selNames.division} • {selNames.screen}
+          </Text>
+        }
+      >
+        {/* keep the remount-for-type-change wrapper */}
+        <div key={`wrap-${title}-${chartType}`}>
+          <ResponsiveContainer width="100%" height={380}>
+            {renderedChart}
+          </ResponsiveContainer>
+        </div>
+      </Card>
     );
   };
 
-  /* ---------------------------- table ---------------------------- */
-  const TableBlock = () => {
-    if (!rows.length) {
+  const CombinedScatterAllSubmissions = () => {
+    if (loading)
       return (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No data" />
+        <div style={{ padding: 24, textAlign: "center" }}>
+          <Spin />
+        </div>
+      );
+    if (!rowsFlat.length || !numericFields.length) {
+      return (
+        <div style={{ padding: 24, textAlign: "center" }}>
+          <Empty description="No submissions found" />
+        </div>
       );
     }
     return (
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", padding: 8, borderBottom: "1px solid #eee" }}>
-                Month
-              </th>
-              {numFields.map((f) => (
-                <th key={f.value} style={{ textAlign: "right", padding: 8, borderBottom: "1px solid #eee" }}>
-                  {f.label}
-                </th>
-              ))}
-              <th style={{ textAlign: "right", padding: 8, borderBottom: "1px solid #eee" }}>
-                Total
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.month}>
-                <td style={{ padding: 8, borderBottom: "1px solid #fafafa" }}>{r.monthLabel}</td>
-                {numFields.map((f) => (
-                  <td key={f.value} style={{ padding: 8, borderBottom: "1px solid #fafafa", textAlign: "right" }}>
-                    {r[f.value] ?? 0}
-                  </td>
-                ))}
-                <td style={{ padding: 8, borderBottom: "1px solid #fafafa", textAlign: "right" }}>
-                  {r.total}
-                </td>
-              </tr>
+      <Card
+        style={{ borderRadius: 12 }}
+        title="All Submissions — Overlay (every numeric field)"
+        extra={
+          <Text type="secondary">
+            {selNames.division} • {selNames.screen}
+          </Text>
+        }
+      >
+        <ResponsiveContainer width="100%" height={420}>
+          <ScatterChart>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              type="number"
+              dataKey="x"
+              tickFormatter={(v) => dayjs(v).format("DD MMM")}
+              name="Date"
+              domain={["auto", "auto"]}
+            />
+            <YAxis dataKey="y" name="Value" />
+            <Tooltip
+              cursor={{ strokeDasharray: "3 3" }}
+              labelFormatter={(label) =>
+                dayjs(label).format("DD MMM YYYY, HH:mm")
+              }
+              formatter={(value) => [value, "Value"]}
+            />
+            <Legend />
+            {perSubmissionSeries.map((s, i) => (
+              <Scatter
+                key={s.key}
+                name={
+                  numericFields.find((f) => f.value === s.key)?.label || s.key
+                }
+                data={s.points}
+                fill={PALETTE[i % PALETTE.length]}
+              />
             ))}
-          </tbody>
-        </table>
-        <Divider style={{ margin: "12px 0" }} />
-        <Space>
-          <Button
-            icon={<DownloadOutlined />}
-            onClick={() => downloadCSV(rows, `chart-all-fields-${months}m.csv`)}
-          >
-            Download CSV
-          </Button>
-          <Text type="secondary">Perfect for Excel or deeper analysis.</Text>
-        </Space>
-      </div>
+          </ScatterChart>
+        </ResponsiveContainer>
+      </Card>
     );
   };
 
+  const FieldMiniCharts = () => {
+    if (!numericFields.length) return null;
+    return (
+      <Row gutter={[16, 16]}>
+        {numericFields.map((f, idx) => {
+          const points =
+            perSubmissionSeries.find((s) => s.key === f.value)?.points || [];
+          const data = points.map((p) => ({ x: p.x, y: p.y }));
+          return (
+            <Col key={f.value} xs={24} md={12} lg={8}>
+              <Card size="small" style={{ borderRadius: 12 }} title={f.label}>
+                {data.length ? (
+                  <ResponsiveContainer width="100%" height={180}>
+                    <LineChart data={data}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis
+                        type="number"
+                        dataKey="x"
+                        tickFormatter={(v) => dayjs(v).format("DD MMM")}
+                      />
+                      <YAxis />
+                      <Tooltip
+                        labelFormatter={(v) =>
+                          dayjs(v).format("DD MMM YYYY, HH:mm")
+                        }
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="y"
+                        stroke={PALETTE[idx % PALETTE.length]}
+                        dot={false}
+                        strokeWidth={2}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description="No points"
+                  />
+                )}
+              </Card>
+            </Col>
+          );
+        })}
+      </Row>
+    );
+  };
+
+  /* ------------------------------- exports ------------------------------- */
+  const exportSumCSV = () => {
+    if (!sumSeries.length) return message.info("Nothing to export");
+    downloadCSV(
+      sumSeries,
+      `sum_${selNames.division}_${selNames.screen}_${
+        months === "all" ? "all" : months + "m"
+      }.csv`
+    );
+  };
+  const exportAvgCSV = () => {
+    if (!avgSeries.length) return message.info("Nothing to export");
+    downloadCSV(
+      avgSeries,
+      `avg_${selNames.division}_${selNames.screen}_${
+        months === "all" ? "all" : months + "m"
+      }.csv`
+    );
+  };
+  const exportRawCSV = () => {
+    if (!rowsFlat.length) return message.info("Nothing to export");
+    downloadCSV(
+      rowsFlat,
+      `raw_${selNames.division}_${selNames.screen}_${
+        months === "all" ? "all" : months + "m"
+      }.csv`
+    );
+  };
+
+  /* -------------------------------- render -------------------------------- */
   return (
     <div>
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Select
-          style={{ minWidth: 380 }}
-          placeholder="Choose Division/Screen"
-          options={options}
-          value={sel ? `${sel.divisionId}|${sel.screenId}` : undefined}
-          onChange={(v, option) => {
-            const [divisionId, screenId] = String(v).split("|");
-            setSel({ divisionId, screenId });
-            setSelNames({
-              division: option?.division?.name || "",
-              screen: option?.screen?.title || "",
-            });
-          }}
-          showSearch
-          optionFilterProp="label"
-        />
+      {/* Controls */}
+      <Card
+        style={{ borderRadius: 12, marginBottom: 16 }}
+        bodyStyle={{ display: "grid", gap: 12 }}
+      >
+        <Space wrap>
+          <Select
+            style={{ minWidth: 360 }}
+            placeholder="Choose Division / Screen"
+            options={options}
+            value={sel ? `${sel.divisionId}|${sel.screenId}` : undefined}
+            onChange={(v, option) => {
+              const [divisionId, screenId] = String(v).split("|");
+              setSel({ divisionId, screenId });
+              setSelNames({
+                division: option?.division?.name || "",
+                screen: option?.screen?.title || "",
+              });
+            }}
+            showSearch
+            optionFilterProp="label"
+          />
 
-        <Segmented
-          options={[
-            { label: "6m", value: 6 },
-            { label: "12m", value: 12 },
-            { label: "24m", value: 24 },
-          ]}
-          value={months}
-          onChange={setMonths}
-        />
+          <Segmented
+            options={[
+              { label: "3m", value: 3 },
+              { label: "6m", value: 6 },
+              { label: "12m", value: 12 },
+              { label: "24m", value: 24 },
+              { label: "All", value: "all" },
+            ]}
+            value={months}
+            onChange={setMonths}
+          />
 
-        <Segmented
-          options={[
-            {
-              label: (
-                <AntdTooltip title="Line">
-                  <LineChartOutlined />
-                </AntdTooltip>
-              ),
-              value: "line",
-            },
-            {
-              label: (
-                <AntdTooltip title="Area">
-                  <AreaChartOutlined />
-                </AntdTooltip>
-              ),
-              value: "area",
-            },
-            {
-              label: (
-                <AntdTooltip title="Bar">
-                  <BarChartOutlined />
-                </AntdTooltip>
-              ),
-              value: "bar",
-            },
-          ]}
-          value={chartType}
-          onChange={setChartType}
-        />
+          <Select
+            style={{ minWidth: 220 }}
+            placeholder="Date source"
+            value={dateChoice}
+            onChange={setDateChoice}
+            options={dateFields}
+          />
 
-        <Button icon={<ReloadOutlined />} onClick={() => sel && fetchAllSeries(sel.divisionId, sel.screenId, months, numFields)} />
+          <Segmented
+            options={[
+              {
+                label: (
+                  <AntdTooltip title="Line">
+                    <LineChartOutlined />
+                  </AntdTooltip>
+                ),
+                value: "line",
+              },
+              {
+                label: (
+                  <AntdTooltip title="Area">
+                    <AreaChartOutlined />
+                  </AntdTooltip>
+                ),
+                value: "area",
+              },
+              {
+                label: (
+                  <AntdTooltip title="Bar">
+                    <BarChartOutlined />
+                  </AntdTooltip>
+                ),
+                value: "bar",
+              },
+            ]}
+            value={chartType}
+            onChange={(v) => setChartType(v ? String(v) : "line")} // normalize to string
+          />
 
-        <ExportA3Button
-          targetId="charts-root"
-          fileName="visualization-a3.pdf"
-          title="Division Analytics — All Metrics"
-          logoSrc={logo}
-          meta={{
-            Division: selNames.division || "—",
-            Screen: selNames.screen || "—",
-            Period: `Last ${months} months`,
-            Metrics: numFields.length ? `${numFields.length} numeric field(s)` : "—",
-          }}
-        />
-      </Space>
+          <Button icon={<ReloadOutlined />} onClick={reload} />
+        </Space>
+
+        <Space wrap>
+          <Button icon={<DownloadOutlined />} onClick={exportSumCSV}>
+            Download SUM CSV
+          </Button>
+          <Button icon={<DownloadOutlined />} onClick={exportAvgCSV}>
+            Download AVG CSV
+          </Button>
+          <Button icon={<DownloadOutlined />} onClick={exportRawCSV}>
+            Download RAW CSV
+          </Button>
+
+          <ExportA3Button
+            targetId="charts-root"
+            fileName="visualization-a3.pdf"
+            title="Division Analytics"
+            logoSrc={logo}
+            meta={{
+              Division: selNames.division || "—",
+              Screen: selNames.screen || "—",
+              Period: months === "all" ? "All time" : `Last ${months} months`,
+              "Numeric fields": numericFields.length || "—",
+              "Date Source":
+                dateFields.find((d) => d.value === dateChoice)?.label ||
+                dateChoice,
+            }}
+          />
+        </Space>
+      </Card>
 
       <div id="charts-root" style={{ display: "grid", gap: 16 }}>
-        {/* KPIs (combined across fields) */}
+        {/* KPIs */}
         <Row gutter={[16, 16]}>
           <Col xs={24} md={8}>
             <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
-              <Title level={5} style={{ margin: 0 }}>Last Month (All)</Title>
+              <Title level={5} style={{ margin: 0 }}>
+                Last Bucket (SUM of all fields)
+              </Title>
               <Text style={{ fontSize: 24, fontWeight: 700 }}>{kpis.last}</Text>
-              <div><Text type="secondary">{rows.at(-1)?.monthLabel || "—"}</Text></div>
+              <div>
+                <Text type="secondary">{kpis.lastLabel}</Text>
+              </div>
             </Card>
           </Col>
           <Col xs={24} md={8}>
             <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
-              <Title level={5} style={{ margin: 0 }}>MoM Change (All)</Title>
+              <Title level={5} style={{ margin: 0 }}>
+                MoM Change
+              </Title>
               <Text style={{ fontSize: 24, fontWeight: 700 }}>
                 {kpis.mom > 0 ? `+${kpis.mom}%` : `${kpis.mom}%`}
               </Text>
-              <div><Text type="secondary">vs previous month</Text></div>
+              <div>
+                <Text type="secondary">vs previous month</Text>
+              </div>
             </Card>
           </Col>
           <Col xs={24} md={8}>
             <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
-              <Title level={5} style={{ margin: 0 }}>Total (period, All)</Title>
-              <Text style={{ fontSize: 24, fontWeight: 700 }}>{kpis.sum}</Text>
-              <div><Text type="secondary">last {months} months</Text></div>
+              <Title level={5} style={{ margin: 0 }}>
+                Total (period, SUM of all fields)
+              </Title>
+              <Text style={{ fontSize: 24, fontWeight: 700 }}>
+                {kpis.total}
+              </Text>
+              <div>
+                <Text type="secondary">
+                  {months === "all" ? "All time" : `Last ${months} months`}
+                </Text>
+              </div>
             </Card>
           </Col>
         </Row>
 
-        {/* Multi-series Chart */}
-        <Card
-          style={{ borderRadius: 12 }}
-          title="Totals by Month — All Numeric Fields"
-          extra={<Text type="secondary">{selNames.division} • {selNames.screen}</Text>}
-        >
-          <ChartBody />
-        </Card>
+        {/* Overlay of every submission for all fields */}
+        <CombinedScatterAllSubmissions />
 
-        {/* Table */}
-        <Card style={{ borderRadius: 12 }} title="Table (all fields)">
-          <TableBlock />
+        {/* Mini charts: one per numeric field (submissions over time) */}
+        <FieldMiniCharts />
+
+        {/* Aggregated charts */}
+        <AggregatedMultiChart
+          data={sumSeries}
+          title="Monthly SUM — All Numeric Fields"
+        />
+        <AggregatedMultiChart
+          data={avgSeries}
+          title="Monthly AVG — All Numeric Fields"
+        />
+
+        {/* Raw Table */}
+        <Card style={{ borderRadius: 12 }} title="All Submissions (raw)">
+          {loading ? (
+            <div style={{ textAlign: "center", padding: 24 }}>
+              <Spin />
+            </div>
+          ) : rowsFlat.length === 0 ? (
+            <Empty description="No submissions" />
+          ) : (
+            <>
+              {/* <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                description="Scroll horizontally to view all fields. Charts above are built directly from this data."
+              /> */}
+              <Table
+                size="small"
+                rowKey="__id"
+                dataSource={rowsFlat}
+                columns={tableColumns}
+                scroll={{ x: "max-content", y: 480 }}
+                pagination={{ pageSize: 20 }}
+              />
+            </>
+          )}
         </Card>
       </div>
     </div>

@@ -1948,7 +1948,7 @@ export default function AdminAccess() {
           )}
 
           {/* Live Preview */}
-          <Card
+          {/* <Card
             size="small"
             style={{ borderRadius: 12 }}
             title={
@@ -1981,7 +1981,7 @@ export default function AdminAccess() {
                 showIcon
               />
             )}
-          </Card>
+          </Card> */}
         </Space>
       </Drawer>
     </div>
