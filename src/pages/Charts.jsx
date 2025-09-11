@@ -638,6 +638,7 @@ export default function Charts() {
     <div>
       {/* Controls */}
       <Card
+        className="pdf-hide"
         style={{ borderRadius: 12, marginBottom: 16 }}
         bodyStyle={{ display: "grid", gap: 12 }}
       >
@@ -744,91 +745,102 @@ export default function Charts() {
 
       <div id="charts-root" style={{ display: "grid", gap: 16 }}>
         {/* KPIs */}
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={8}>
-            <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
-              <Title level={5} style={{ margin: 0 }}>
-                Last Bucket (SUM of all fields)
-              </Title>
-              <Text style={{ fontSize: 24, fontWeight: 700 }}>{kpis.last}</Text>
-              <div>
-                <Text type="secondary">{kpis.lastLabel}</Text>
-              </div>
-            </Card>
-          </Col>
-          <Col xs={24} md={8}>
-            <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
-              <Title level={5} style={{ margin: 0 }}>
-                MoM Change
-              </Title>
-              <Text style={{ fontSize: 24, fontWeight: 700 }}>
-                {kpis.mom > 0 ? `+${kpis.mom}%` : `${kpis.mom}%`}
-              </Text>
-              <div>
-                <Text type="secondary">vs previous month</Text>
-              </div>
-            </Card>
-          </Col>
-          <Col xs={24} md={8}>
-            <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
-              <Title level={5} style={{ margin: 0 }}>
-                Total (period, SUM of all fields)
-              </Title>
-              <Text style={{ fontSize: 24, fontWeight: 700 }}>
-                {kpis.total}
-              </Text>
-              <div>
-                <Text type="secondary">
-                  {months === "all" ? "All time" : `Last ${months} months`}
+        <section data-pdf-block>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}>
+              <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
+                <Title level={5} style={{ margin: 0 }}>
+                  Last Bucket (SUM of all fields)
+                </Title>
+                <Text style={{ fontSize: 24, fontWeight: 700 }}>
+                  {kpis.last}
                 </Text>
-              </div>
-            </Card>
-          </Col>
-        </Row>
-
+                <div>
+                  <Text type="secondary">{kpis.lastLabel}</Text>
+                </div>
+              </Card>
+            </Col>
+            <Col xs={24} md={8}>
+              <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
+                <Title level={5} style={{ margin: 0 }}>
+                  MoM Change
+                </Title>
+                <Text style={{ fontSize: 24, fontWeight: 700 }}>
+                  {kpis.mom > 0 ? `+${kpis.mom}%` : `${kpis.mom}%`}
+                </Text>
+                <div>
+                  <Text type="secondary">vs previous month</Text>
+                </div>
+              </Card>
+            </Col>
+            <Col xs={24} md={8}>
+              <Card style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
+                <Title level={5} style={{ margin: 0 }}>
+                  Total (period, SUM of all fields)
+                </Title>
+                <Text style={{ fontSize: 24, fontWeight: 700 }}>
+                  {kpis.total}
+                </Text>
+                <div>
+                  <Text type="secondary">
+                    {months === "all" ? "All time" : `Last ${months} months`}
+                  </Text>
+                </div>
+              </Card>
+            </Col>
+          </Row>
+        </section>
         {/* Overlay of every submission for all fields */}
-        <CombinedScatterAllSubmissions />
-
+        <section data-pdf-block>
+          <CombinedScatterAllSubmissions />
+        </section>
         {/* Mini charts: one per numeric field (submissions over time) */}
-        <FieldMiniCharts />
-
+        <section data-pdf-block>
+          <FieldMiniCharts />
+        </section>
         {/* Aggregated charts */}
-        <AggregatedMultiChart
-          data={sumSeries}
-          title="Monthly SUM — All Numeric Fields"
-        />
-        <AggregatedMultiChart
-          data={avgSeries}
-          title="Monthly AVG — All Numeric Fields"
-        />
-
+        <section data-pdf-block>
+          <AggregatedMultiChart
+            data={sumSeries}
+            title="Monthly SUM — All Numeric Fields"
+          />
+        </section>
+        <section data-pdf-block>
+          <AggregatedMultiChart
+            data={avgSeries}
+            title="Monthly AVG — All Numeric Fields"
+          />
+        </section>
         {/* Raw Table */}
-        <Card style={{ borderRadius: 12 }} title="All Submissions (raw)">
-          {loading ? (
-            <div style={{ textAlign: "center", padding: 24 }}>
-              <Spin />
-            </div>
-          ) : rowsFlat.length === 0 ? (
-            <Empty description="No submissions" />
-          ) : (
-            <>
-              {/* <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 12 }}
-                description="Scroll horizontally to view all fields. Charts above are built directly from this data."
-              /> */}
-              <Table
-                size="small"
-                rowKey="__id"
-                dataSource={rowsFlat}
-                columns={tableColumns}
-                scroll={{ x: "max-content", y: 480 }}
-                pagination={{ pageSize: 20 }}
-              />
-            </>
-          )}
-        </Card>
+        <section data-pdf-block>
+          <Card style={{ borderRadius: 12 }} title="All Submissions (raw)">
+            {loading ? (
+              <div style={{ textAlign: "center", padding: 24 }}>
+                <Spin />
+              </div>
+            ) : rowsFlat.length === 0 ? (
+              <Empty description="No submissions" />
+            ) : (
+              <>
+                <Alert
+                  className="pdf-hide"
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  description="Scroll horizontally to view all fields. Charts above are built directly from this data."
+                />
+                <Table
+                  size="small"
+                  rowKey="__id"
+                  dataSource={rowsFlat}
+                  columns={tableColumns}
+                  scroll={{ x: "max-content", y: 480 }}
+                  pagination={{ pageSize: 20 }}
+                />
+              </>
+            )}
+          </Card>
+        </section>
       </div>
     </div>
   );
